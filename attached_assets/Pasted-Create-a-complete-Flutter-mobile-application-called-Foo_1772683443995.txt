@@ -1,0 +1,330 @@
+Create a complete Flutter mobile application called "FoodBridge" - an AI Smart Food 
+Waste & Community Donation App. Build the full project with the following specifications:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 APP OVERVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+App Name: FoodBridge
+Platform: Flutter (Android & iOS)
+Design Tool: Figma-inspired UI (Material Design 3 + Custom Theme)
+Color Palette: #2E7D32 (Primary Green), #FF8F00 (Accent Orange), 
+               #FFFFFF (Background), #F1F8E9 (Surface)
+Font: Poppins (Google Fonts)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 PROJECT STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+lib/
+├── main.dart
+├── app/
+│   ├── theme/
+│   │   └── app_theme.dart
+│   └── routes/
+│       └── app_routes.dart
+├── features/
+│   ├── splash/
+│   │   └── splash_screen.dart
+│   ├── onboarding/
+│   │   └── onboarding_screen.dart
+│   ├── auth/
+│   │   ├── login_screen.dart
+│   │   └── register_screen.dart
+│   ├── home/
+│   │   └── home_screen.dart
+│   ├── pantry/
+│   │   ├── pantry_screen.dart
+│   │   ├── add_food_screen.dart
+│   │   └── food_item_card.dart
+│   ├── scanner/
+│   │   └── ai_scanner_screen.dart
+│   ├── recipes/
+│   │   ├── recipe_screen.dart
+│   │   └── recipe_card.dart
+│   ├── donate/
+│   │   ├── donate_screen.dart
+│   │   └── donation_map_screen.dart
+│   ├── notifications/
+│   │   └── notification_screen.dart
+│   └── profile/
+│       └── profile_screen.dart
+├── models/
+│   ├── food_item.dart
+│   ├── recipe.dart
+│   └── donation.dart
+├── services/
+│   ├── ai_food_service.dart
+│   ├── notification_service.dart
+│   └── location_service.dart
+└── widgets/
+    ├── custom_button.dart
+    ├── custom_card.dart
+    └── bottom_nav_bar.dart
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 SCREENS & FEATURES TO BUILD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. SPLASH SCREEN
+   - Animated FoodBridge logo
+   - Green gradient background
+   - Lottie animation of food/leaf
+
+2. ONBOARDING SCREEN (3 slides)
+   - Slide 1: "Track Your Food" - pantry management illustration
+   - Slide 2: "AI-Powered Scanning" - camera scan illustration  
+   - Slide 3: "Share & Donate" - community map illustration
+   - PageView with dot indicators + Skip/Next buttons
+
+3. AUTH SCREENS
+   - Login: Email + Password, Google Sign-In button, 
+     "Forgot Password" link
+   - Register: Name, Email, Password, Location picker, 
+     Role selector (Donor / Receiver / Volunteer)
+
+4. HOME DASHBOARD
+   - Top greeting card: "Good Morning, [Name]!"
+   - Stats row: Items Saved | Meals Donated | CO2 Reduced
+   - Expiry Alert Banner (red/orange warning cards)
+   - Quick Action Buttons: Scan Food | Add Item | Donate Now | Find Food
+   - Recent Activity Feed
+   - Bottom Navigation Bar (5 tabs)
+
+5. SMART PANTRY SCREEN
+   - Grid/List toggle view of food items
+   - Color-coded expiry status:
+     * Green = 7+ days remaining
+     * Orange = 3-6 days remaining  
+     * Red = 1-2 days (expiring soon)
+     * Grey = Expired
+   - Filter by category: Fruits, Vegetables, Dairy, 
+     Grains, Protein, Beverages
+   - Search bar with real-time filtering
+   - Swipe-to-delete with undo snackbar
+   - FAB button to add new item
+
+6. ADD FOOD ITEM SCREEN
+   - Camera button to trigger AI scanner
+   - Manual entry form:
+     * Food Name (text field)
+     * Category (dropdown)
+     * Quantity + Unit (number field + dropdown)
+     * Purchase Date (date picker)
+     * Expiry Date (date picker)
+     * Storage Location (Fridge/Freezer/Pantry/Counter)
+     * Notes (optional text area)
+   - Save button with validation
+
+7. AI FOOD SCANNER SCREEN
+   - Camera preview with scanning overlay UI
+   - Animated scanning beam effect
+   - Mock AI recognition result card showing:
+     * Detected food name
+     * Suggested category  
+     * Estimated shelf life
+     * Confidence percentage (e.g., 94% match)
+   - "Use This Result" and "Scan Again" buttons
+   - Simulate AI response with a 2-second delay + loading animation
+
+8. RECIPE SUGGESTIONS SCREEN
+   - "Recipes for You" based on pantry items
+   - Recipe cards with:
+     * Food image (use placeholder/asset images)
+     * Recipe name
+     * Ingredients matched from pantry (highlighted in green)
+     * Missing ingredients (shown in grey)
+     * Cook time + difficulty badge
+     * "View Recipe" button
+   - Filter: Quick Meals | Zero Waste | Healthy
+   - Search recipes by ingredient
+
+9. DONATE SCREEN
+   - Two tabs: "Donate Food" | "Find Food"
+   - Donate Food Tab:
+     * List of user's expiring items (auto-suggested)
+     * Checkbox to select items for donation
+     * Donation quantity selector
+     * Pickup or Drop-off option
+     * Schedule picker (date + time)
+     * Message to receiver (optional)
+     * "Post Donation" button
+   - Find Food Tab:
+     * List of available donations nearby
+     * Donor name + distance + items available
+     * Request button per listing
+     * Filter by food type / distance
+
+10. DONATION MAP SCREEN
+    - Google Maps integration (or flutter_map with OpenStreetMap)
+    - Custom markers:
+      * Green pin = Available donation
+      * Blue pin = Food bank / NGO
+      * Orange pin = Community fridge
+    - Bottom sheet with donation details on pin tap
+    - "Get Directions" button
+    - Search location bar at top
+
+11. NOTIFICATIONS SCREEN
+    - List of smart alerts:
+      * "🍅 Tomatoes expire in 2 days - Donate or use now!"
+      * "✅ Your donation was accepted by [Name]"
+      * "🍽️ New recipe suggestion based on your pantry"
+      * "📍 Food available 0.5km from you"
+    - Mark as read / Clear all
+    - Notification settings toggle
+
+12. PROFILE SCREEN
+    - Avatar + Name + Role badge
+    - Impact Stats card:
+      * Total food saved (kg)
+      * Total donations made
+      * CO2 emissions reduced (kg)
+      * Meals equivalent provided
+    - My Donations history list
+    - Settings section:
+      * Notification preferences
+      * Location sharing toggle
+      * Dark mode toggle
+      * Language selector
+      * About / Help / Logout
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 REQUIRED FLUTTER PACKAGES (pubspec.yaml)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # UI & Design
+  google_fonts: ^6.1.0
+  flutter_svg: ^2.0.9
+  lottie: ^2.7.0
+  cached_network_image: ^3.3.0
+  shimmer: ^3.0.0
+  
+  # State Management
+  provider: ^6.1.1
+  
+  # Navigation
+  go_router: ^12.1.1
+  
+  # Local Storage
+  shared_preferences: ^2.2.2
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  
+  # Camera & Image
+  camera: ^0.10.5+5
+  image_picker: ^1.0.4
+  
+  # Maps & Location
+  google_maps_flutter: ^2.5.0
+  geolocator: ^10.1.0
+  geocoding: ^2.1.1
+  
+  # Notifications
+  flutter_local_notifications: ^16.1.0
+  
+  # Charts & Analytics
+  fl_chart: ^0.65.0
+  
+  # Utils
+  intl: ^0.18.1
+  uuid: ^4.2.1
+  permission_handler: ^11.1.0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎨 FIGMA-INSPIRED DESIGN SYSTEM
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Implement this design system in app_theme.dart:
+
+Colors:
+  primaryGreen: Color(0xFF2E7D32)
+  lightGreen: Color(0xFF66BB6A)
+  accentOrange: Color(0xFFFF8F00)
+  warningRed: Color(0xFFD32F2F)
+  backgroundWhite: Color(0xFFFFFFFF)
+  surfaceGreen: Color(0xFFF1F8E9)
+  textDark: Color(0xFF1B1B1B)
+  textGrey: Color(0xFF757575)
+
+Typography (Poppins):
+  headingLarge: 28px, FontWeight.bold
+  headingMedium: 22px, FontWeight.w600
+  bodyText: 14px, FontWeight.normal
+  caption: 12px, FontWeight.w400
+  buttonText: 16px, FontWeight.w600
+
+Component Styles:
+  Card: borderRadius 16px, elevation 2, shadow color green/10%
+  Button (Primary): borderRadius 12px, height 52px, green gradient
+  Button (Secondary): borderRadius 12px, outlined green border
+  Input Field: borderRadius 12px, filled surface color
+  Bottom Nav: height 65px, rounded top corners 20px
+  
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 AI SIMULATION LOGIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Since real ML isn't available, simulate AI with:
+
+1. Food Recognition (ai_food_service.dart):
+   - Take image input from camera
+   - After 2s delay, return random result from a 
+     predefined list of 20 common foods
+   - Include: name, category, shelf_life_days, 
+     confidence_score (85-99%)
+
+2. Recipe Matching:
+   - Match pantry items to a hardcoded list of 15 recipes
+   - Score recipes by % of ingredients available
+   - Sort by highest match score
+
+3. Expiry Predictions:
+   - Calculate days remaining from expiry date
+   - Auto-categorize into: Fresh / Good / Expiring / Expired
+   - Generate smart notification messages
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 SAMPLE DATA TO PRELOAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Preload the app with sample data for demo purposes:
+
+Pantry Items (8 items):
+  - Tomatoes, 500g, expires in 2 days, Fridge
+  - Milk (Full Cream), 1L, expires in 4 days, Fridge
+  - Bread (Wholegrain), 1 loaf, expires in 1 day, Counter
+  - Chicken Breast, 400g, expires in 1 day, Freezer
+  - Spinach, 200g, expires in 3 days, Fridge
+  - Eggs, 6pcs, expires in 10 days, Fridge
+  - Rice (Basmati), 2kg, expires in 180 days, Pantry
+  - Bananas, 4pcs, expires in 5 days, Counter
+
+Nearby Donations (3 listings):
+  - "Fresh Vegetables Bundle" - 0.3km away
+  - "Surplus Bread & Pastries" - 0.8km away  
+  - "Canned Food Pack" - 1.2km away
+
+Recipes (5 suggestions):
+  - Tomato & Spinach Omelette (uses: eggs, tomatoes, spinach)
+  - Chicken Fried Rice (uses: rice, chicken, eggs)
+  - Banana Smoothie Bowl (uses: bananas, milk)
+  - Spinach & Egg Scramble (uses: eggs, spinach)
+  - Tomato Rice Soup (uses: tomatoes, rice)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ FINAL REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- All screens must be fully functional with navigation
+- Use Provider for state management across screens
+- Implement Hero animations between list and detail views
+- Add smooth page transitions (fade/slide)
+- Include form validation on all input screens
+- Use Hive for local data persistence
+- Make the UI fully responsive for different screen sizes
+- Add empty state illustrations when lists are empty
+- Include loading skeletons (shimmer effect) for data loading
+- Ensure all text uses Poppins font from Google Fonts
+- Dark mode support via theme toggle in profile
+
+Build the complete project with all files, 
+starting with pubspec.yaml, then main.dart, 
+then app_theme.dart, then each screen in order.
