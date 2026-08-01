@@ -1,8 +1,12 @@
+import { config } from 'dotenv';
+config({ path: '.env', override: true });
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { storage } from "./storage";
 import * as fs from "fs";
 import * as path from "path";
+
 
 const app = express();
 const log = console.log;
@@ -32,7 +36,9 @@ function setupCors(app: express.Application) {
     // Allow localhost origins for Expo web development (any port)
     const isLocalhost =
       origin?.startsWith("http://localhost:") ||
-      origin?.startsWith("http://127.0.0.1:");
+      origin?.startsWith("http://127.0.0.1:") ||
+      origin?.startsWith("http://10.") ||
+      origin?.startsWith("http://192.168.");
 
     if (origin && (origins.has(origin) || isLocalhost)) {
       res.header("Access-Control-Allow-Origin", origin);
@@ -55,6 +61,7 @@ function setupCors(app: express.Application) {
 function setupBodyParsing(app: express.Application) {
   app.use(
     express.json({
+      limit: '10mb',
       verify: (req, _res, buf) => {
         req.rawBody = buf;
       },
@@ -236,15 +243,22 @@ function setupErrorHandler(app: express.Application) {
 
   setupErrorHandler(app);
 
-  const port = parseInt(process.env.PORT || "5000", 10);
-  server.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`express server serving on port ${port}`);
-    },
-  );
+  const port = parseInt(process.env.PORT || "4000", 10);
+
+  server.listen(port, "0.0.0.0", () => {
+    log(`express server serving on port ${port}`);
+    
+    // Start Pantry Expiry Background Worker (runs every 1 hour)
+    setInterval(async () => {
+      try {
+        log("[Cron] Running checkAndNotifyExpiringPantry...");
+        await storage.checkAndNotifyExpiringPantry();
+      } catch (err) {
+        console.error("[Cron] Error checking pantry expiry:", err);
+      }
+    }, 60 * 60 * 1000);
+    
+    // Run once on startup
+    storage.checkAndNotifyExpiringPantry().catch(console.error);
+  });
 })();
