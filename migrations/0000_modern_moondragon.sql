@@ -4,7 +4,7 @@ CREATE TABLE "donations" (
 	"status" text DEFAULT 'pending' NOT NULL,
 	"posted_at" integer DEFAULT extract(epoch from now())::int NOT NULL
 );
---> statement-breakpoint
+
 CREATE TABLE "notifications" (
 	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"type" text NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE "notifications" (
 	"read" boolean DEFAULT false NOT NULL,
 	"timestamp" integer DEFAULT extract(epoch from now())::int NOT NULL
 );
---> statement-breakpoint
+
 CREATE TABLE "pantry_items" (
 	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"name" text NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE "pantry_items" (
 	"notes" text,
 	"added_at" integer DEFAULT extract(epoch from now())::int NOT NULL
 );
---> statement-breakpoint
+
 CREATE TABLE "users" (
 	"id" varchar PRIMARY KEY NOT NULL,
 	"email" text NOT NULL,
