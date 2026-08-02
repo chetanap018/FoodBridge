@@ -1,19 +1,38 @@
+import { Platform } from "react-native";
 import { fetch } from "expo/fetch";
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 /**
- * Gets the base URL for the Express API server (e.g., "http://localhost:3000")
+ * Gets the base URL for the Express API server (e.g., "http://localhost:4000")
  * @returns {string} The API base URL
  */
 export function getApiUrl(): string {
+  // On web, if we're on localhost, we likely want to talk to the local server too
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return `http://localhost:4000`;
+    }
+  }
+
   let host = process.env.EXPO_PUBLIC_DOMAIN;
 
   if (!host) {
     throw new Error("EXPO_PUBLIC_DOMAIN is not set");
   }
 
-  let url = new URL(`https://${host}`);
+  // Handle Android emulator: 10.0.2.2 points to host machine
+  // We only replace if it's localhost or 127.0.0.1 and we are on Android
+  if (Platform.OS === 'android') {
+    if (host.includes('localhost') || host.includes('127.0.0.1')) {
+      host = host.replace(/localhost|127\.0\.0\.1/, '10.0.2.2');
+    }
+  }
 
+  const isLocal = host.includes('localhost') || host.includes('10.0.2.2') || /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(host);
+  const protocol = isLocal ? 'http' : 'https';
+  let url = new URL(`${protocol}://${host}`);
+
+  console.log(`[getApiUrl] ${Platform.OS} target: ${url.href}`);
   return url.href;
 }
 
@@ -48,21 +67,21 @@ export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
-  async ({ queryKey }) => {
-    const baseUrl = getApiUrl();
-    const url = new URL(queryKey.join("/") as string, baseUrl);
+    async ({ queryKey }) => {
+      const baseUrl = getApiUrl();
+      const url = new URL(queryKey.join("/") as string, baseUrl);
 
-    const res = await fetch(url.toString(), {
-      credentials: "include",
-    });
+      const res = await fetch(url.toString(), {
+        credentials: "include",
+      });
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
-    }
+      if (unauthorizedBehavior === "returnNull" && res.status === 401) {
+        return null;
+      }
 
-    await throwIfResNotOk(res);
-    return await res.json();
-  };
+      await throwIfResNotOk(res);
+      return await res.json();
+    };
 
 export const queryClient = new QueryClient({
   defaultOptions: {
