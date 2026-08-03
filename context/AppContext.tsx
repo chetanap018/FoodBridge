@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import { useColorScheme } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from '@/lib/supabase';
+import { Session } from '@supabase/supabase-js';
+import { apiRequest } from '@/lib/query-client';
 
 export type ExpiryStatus = 'fresh' | 'good' | 'warning' | 'danger' | 'expired';
 export type Category = 'Fruits' | 'Vegetables' | 'Dairy' | 'Grains' | 'Protein' | 'Beverages' | 'Other';
 export type StorageLocation = 'Fridge' | 'Freezer' | 'Pantry' | 'Counter';
 export type UserRole = 'Donor' | 'Receiver' | 'Volunteer';
+export type UserCategory = 'Pure Donor' | 'Pure Receiver' | 'Household';
 
 export interface FoodItem {
   id: string;
@@ -36,7 +41,10 @@ export interface Recipe {
 export interface DonationListing {
   id: string;
   donorName: string;
-  items: string;
+  title: string;
+  foodCategory: string;
+  quantity: string;
+  unit: string;
   distance: string;
   distanceKm: number;
   type: 'vegetables' | 'bread' | 'canned' | 'dairy' | 'mixed';
@@ -46,7 +54,10 @@ export interface DonationListing {
 
 export interface UserDonation {
   id: string;
-  items: string[];
+  title: string;
+  foodCategory: string;
+  quantity: string;
+  unit: string;
   postedAt: number;
   status: 'pending' | 'accepted' | 'completed';
   receiverName?: string;
@@ -65,6 +76,9 @@ export interface UserProfile {
   name: string;
   email: string;
   role: UserRole;
+  userCategory: UserCategory;
+  entityType?: string;
+  buildingName?: string;
   avatar: string;
   foodSaved: number;
   donationsMade: number;
@@ -86,16 +100,31 @@ interface AppContextValue {
   notifications: Notification[];
   profile: UserProfile;
   settings: AppSettings;
-  addFoodItem: (item: Omit<FoodItem, 'id' | 'addedAt'>) => void;
-  removeFoodItem: (id: string) => void;
+  addFoodItem: (item: Omit<FoodItem, 'id' | 'addedAt'>) => Promise<void>;
+  removeFoodItem: (id: string, action?: 'consume' | 'donate' | 'waste') => Promise<void>;
   updateSettings: (settings: Partial<AppSettings>) => void;
   markNotificationRead: (id: string) => void;
   clearAllNotifications: () => void;
-  postDonation: (items: string[], note?: string) => void;
+  postDonation: (itemIds: string[], note?: string, communityId?: string, isBulk?: boolean, bulkItems?: string[]) => Promise<void>;
+  updateProfile: (data: { 
+    name?: string; 
+    role?: string; 
+    userCategory?: UserCategory;
+    entityType?: string;
+    buildingName?: string;
+    avatar?: string;
+    foodSaved?: number;
+    donationsMade?: number;
+    co2Reduced?: number;
+    mealsProvided?: number;
+  }) => Promise<void>;
   getExpiryStatus: (expiryDate: string) => ExpiryStatus;
   getDaysRemaining: (expiryDate: string) => number;
   getExpiringItems: () => FoodItem[];
+  removeAllExpiredItems: () => Promise<void>;
   isLoaded: boolean;
+  isGeneratingRecipes: boolean;
+  generateRecipes: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -126,6 +155,27 @@ const dateOffset = (days: number) => {
   return d.toISOString().split('T')[0];
 };
 
+function calculateItemWeightKg(quantityStr: string, unit: string): number {
+  const qty = parseFloat(quantityStr) || 0;
+  const u = unit.toLowerCase().trim();
+  if (u === 'g' || u === 'ml') {
+    return qty / 1000;
+  }
+  if (u === 'kg' || u === 'l') {
+    return qty;
+  }
+  if (u === 'pcs') {
+    return qty * 0.1; // Assumed 100g per piece
+  }
+  if (u === 'loaf') {
+    return qty * 0.5; // Assumed 500g per loaf
+  }
+  if (u === 'pack' || u === 'box' || u === 'can' || u === 'bottle') {
+    return qty * 0.4; // Assumed 400g average
+  }
+  return qty * 0.2; // Default fallback
+}
+
 const INITIAL_PANTRY: FoodItem[] = [
   { id: '1', name: 'Tomatoes', category: 'Vegetables', quantity: '500', unit: 'g', purchaseDate: dateOffset(-5), expiryDate: dateOffset(2), storageLocation: 'Fridge', addedAt: Date.now() - 5000 },
   { id: '2', name: 'Milk (Full Cream)', category: 'Dairy', quantity: '1', unit: 'L', purchaseDate: dateOffset(-3), expiryDate: dateOffset(4), storageLocation: 'Fridge', addedAt: Date.now() - 4000 },
@@ -138,77 +188,17 @@ const INITIAL_PANTRY: FoodItem[] = [
 ];
 
 const INITIAL_RECIPES: Recipe[] = [
-  {
-    id: 'r1',
-    name: 'Tomato & Spinach Omelette',
-    ingredients: ['Eggs', 'Tomatoes', 'Spinach'],
-    missingIngredients: [],
-    cookTime: '10 min',
-    difficulty: 'Easy',
-    matchScore: 100,
-    emoji: '🍳',
-    description: 'A hearty, nutritious omelette packed with fresh veggies.',
-    steps: ['Whisk 3 eggs', 'Dice tomatoes and wilt spinach', 'Cook in pan for 5 mins each side'],
-    filter: ['Quick Meals', 'Healthy', 'Zero Waste'],
-  },
-  {
-    id: 'r2',
-    name: 'Chicken Fried Rice',
-    ingredients: ['Rice (Basmati)', 'Chicken Breast', 'Eggs'],
-    missingIngredients: ['Soy sauce', 'Garlic'],
-    cookTime: '25 min',
-    difficulty: 'Medium',
-    matchScore: 75,
-    emoji: '🍚',
-    description: 'Classic fried rice with tender chicken and fluffy eggs.',
-    steps: ['Cook rice', 'Stir-fry chicken', 'Add eggs and rice', 'Season with soy sauce'],
-    filter: ['Zero Waste'],
-  },
-  {
-    id: 'r3',
-    name: 'Banana Smoothie Bowl',
-    ingredients: ['Bananas', 'Milk (Full Cream)'],
-    missingIngredients: ['Granola', 'Honey'],
-    cookTime: '5 min',
-    difficulty: 'Easy',
-    matchScore: 80,
-    emoji: '🍌',
-    description: 'Creamy blended bowl with banana and milk, perfect for breakfast.',
-    steps: ['Blend bananas with milk', 'Pour into bowl', 'Top with granola and honey'],
-    filter: ['Quick Meals', 'Healthy'],
-  },
-  {
-    id: 'r4',
-    name: 'Spinach & Egg Scramble',
-    ingredients: ['Eggs', 'Spinach'],
-    missingIngredients: ['Feta cheese', 'Olive oil'],
-    cookTime: '8 min',
-    difficulty: 'Easy',
-    matchScore: 85,
-    emoji: '🥗',
-    description: 'Quick protein-packed scramble with wilted spinach.',
-    steps: ['Wilt spinach in pan', 'Scramble eggs together', 'Season with salt and pepper'],
-    filter: ['Quick Meals', 'Healthy', 'Zero Waste'],
-  },
-  {
-    id: 'r5',
-    name: 'Tomato Rice Soup',
-    ingredients: ['Tomatoes', 'Rice (Basmati)'],
-    missingIngredients: ['Vegetable broth', 'Onion', 'Garlic'],
-    cookTime: '30 min',
-    difficulty: 'Medium',
-    matchScore: 60,
-    emoji: '🍲',
-    description: 'Warming soup with fresh tomatoes and rice, a cozy classic.',
-    steps: ['Sauté onion and garlic', 'Add tomatoes and broth', 'Simmer with rice for 20 mins'],
-    filter: ['Zero Waste', 'Healthy'],
-  },
+  { id: 'r1', name: 'Tomato & Spinach Omelette', ingredients: ['Eggs', 'Tomatoes', 'Spinach'], missingIngredients: [], cookTime: '10 min', difficulty: 'Easy', matchScore: 100, emoji: '🍳', description: 'A hearty, nutritious omelette packed with fresh veggies.', steps: ['Whisk 3 eggs', 'Dice tomatoes and wilt spinach', 'Cook in pan for 5 mins each side'], filter: ['Quick Meals', 'Healthy', 'Zero Waste'] },
+  { id: 'r2', name: 'Chicken Fried Rice', ingredients: ['Rice (Basmati)', 'Chicken Breast', 'Eggs'], missingIngredients: ['Soy sauce', 'Garlic'], cookTime: '25 min', difficulty: 'Medium', matchScore: 75, emoji: '🍚', description: 'Classic fried rice with tender chicken and fluffy eggs.', steps: ['Cook rice', 'Stir-fry chicken', 'Add eggs and rice', 'Season with soy sauce'], filter: ['Zero Waste'] },
+  { id: 'r3', name: 'Banana Smoothie Bowl', ingredients: ['Bananas', 'Milk (Full Cream)'], missingIngredients: ['Granola', 'Honey'], cookTime: '5 min', difficulty: 'Easy', matchScore: 80, emoji: '🍌', description: 'Creamy blended bowl with banana and milk, perfect for breakfast.', steps: ['Blend bananas with milk', 'Pour into bowl', 'Top with granola and honey'], filter: ['Quick Meals', 'Healthy'] },
+  { id: 'r4', name: 'Spinach & Egg Scramble', ingredients: ['Eggs', 'Spinach'], missingIngredients: ['Feta cheese', 'Olive oil'], cookTime: '8 min', difficulty: 'Easy', matchScore: 85, emoji: '🥗', description: 'Quick protein-packed scramble with wilted spinach.', steps: ['Wilt spinach in pan', 'Scramble eggs together', 'Season with salt and pepper'], filter: ['Quick Meals', 'Healthy', 'Zero Waste'] },
+  { id: 'r5', name: 'Tomato Rice Soup', ingredients: ['Tomatoes', 'Rice (Basmati)'], missingIngredients: ['Vegetable broth', 'Onion', 'Garlic'], cookTime: '30 min', difficulty: 'Medium', matchScore: 60, emoji: '🍲', description: 'Warming soup with fresh tomatoes and rice, a cozy classic.', steps: ['Sauté onion and garlic', 'Add tomatoes and broth', 'Simmer with rice for 20 mins'], filter: ['Zero Waste', 'Healthy'] },
 ];
 
 const INITIAL_NEARBY: DonationListing[] = [
-  { id: 'd1', donorName: 'Green Market', items: 'Fresh Vegetables Bundle', distance: '0.3 km', distanceKm: 0.3, type: 'vegetables', postedAt: '2 hrs ago', available: true },
-  { id: 'd2', donorName: 'City Bakery', items: 'Surplus Bread & Pastries', distance: '0.8 km', distanceKm: 0.8, type: 'bread', postedAt: '4 hrs ago', available: true },
-  { id: 'd3', donorName: 'Community Pantry', items: 'Canned Food Pack', distance: '1.2 km', distanceKm: 1.2, type: 'canned', postedAt: '6 hrs ago', available: true },
+  { id: 'd1', donorName: 'Green Market', title: 'Fresh Vegetables Bundle', foodCategory: 'Vegetables', quantity: '1', unit: 'Bundle', distance: '0.3 km', distanceKm: 0.3, type: 'vegetables', postedAt: '2 hrs ago', available: true },
+  { id: 'd2', donorName: 'City Bakery', title: 'Surplus Bread & Pastries', foodCategory: 'Bakery', quantity: '1', unit: 'Bundle', distance: '0.8 km', distanceKm: 0.8, type: 'bread', postedAt: '4 hrs ago', available: true },
+  { id: 'd3', donorName: 'Community Pantry', title: 'Canned Food Pack', foodCategory: 'Other', quantity: '1', unit: 'Bundle', distance: '1.2 km', distanceKm: 1.2, type: 'canned', postedAt: '6 hrs ago', available: true },
 ];
 
 const INITIAL_NOTIFICATIONS: Notification[] = [
@@ -219,74 +209,336 @@ const INITIAL_NOTIFICATIONS: Notification[] = [
   { id: 'n5', type: 'donation_accepted', message: 'Your donation was accepted by Green Market', timestamp: Date.now() - 172800000, read: true },
 ];
 
-const INITIAL_PROFILE: UserProfile = {
-  name: 'Alex Johnson',
-  email: 'alex@example.com',
-  role: 'Donor',
-  avatar: 'AJ',
-  foodSaved: 12.4,
-  donationsMade: 8,
-  co2Reduced: 24.8,
-  mealsProvided: 32,
-};
-
 export function AppProvider({ children }: { children: ReactNode }) {
   const [pantryItems, setPantryItems] = useState<FoodItem[]>([]);
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [userDonations, setUserDonations] = useState<UserDonation[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({
-    darkMode: false,
-    notificationsEnabled: true,
-    locationSharing: true,
-  });
-  const [profile] = useState<UserProfile>(INITIAL_PROFILE);
+  const [notifications, setNotifications] = useState<Notification[]>(INITIAL_NOTIFICATIONS);
+  const [settings, setSettings] = useState<AppSettings>({ darkMode: false, notificationsEnabled: true, locationSharing: true });
+  const [profile, setProfile] = useState<UserProfile>({ name: '', email: '', role: 'Donor', userCategory: 'Household', avatar: '?', foodSaved: 0, donationsMade: 0, co2Reduced: 0, mealsProvided: 0 });
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isGeneratingRecipes, setIsGeneratingRecipes] = useState(false);
 
   useEffect(() => {
-    const load = async () => {
+    let subscription: { unsubscribe: () => void } | null = null;
+
+    const loadData = async (session: Session | null) => {
+      setIsLoaded(false);
       try {
-        const [pantryRaw, donationsRaw, notificationsRaw, settingsRaw] = await Promise.all([
-          AsyncStorage.getItem('pantryItems'),
-          AsyncStorage.getItem('userDonations'),
-          AsyncStorage.getItem('notifications'),
-          AsyncStorage.getItem('settings'),
-        ]);
-        setPantryItems(pantryRaw ? JSON.parse(pantryRaw) : INITIAL_PANTRY);
-        setUserDonations(donationsRaw ? JSON.parse(donationsRaw) : []);
-        setNotifications(notificationsRaw ? JSON.parse(notificationsRaw) : INITIAL_NOTIFICATIONS);
+        const settingsRaw = await AsyncStorage.getItem('settings');
         if (settingsRaw) setSettings(JSON.parse(settingsRaw));
-      } catch {
-        setPantryItems(INITIAL_PANTRY);
-        setNotifications(INITIAL_NOTIFICATIONS);
+
+        if (!session) {
+          // GUEST MODE
+          const localPantryRaw = await AsyncStorage.getItem('pantryItems');
+          if (localPantryRaw) {
+            setPantryItems(JSON.parse(localPantryRaw));
+          } else {
+            setPantryItems(INITIAL_PANTRY);
+          }
+          setUserDonations([]);
+          setProfile({ name: 'Guest User', email: '', role: 'Donor', userCategory: 'Household', avatar: 'G', foodSaved: 0, donationsMade: 0, co2Reduced: 0, mealsProvided: 0 });
+          setIsLoaded(true);
+          return;
+        }
+
+        // USER MODE
+        const userId = session.user.id;
+        setProfile(prev => ({
+          ...prev,
+          email: session.user.email ?? '',
+          name: session.user.user_metadata?.full_name ?? prev.name,
+          avatar: (session.user.user_metadata?.full_name ?? session.user.email ?? '?')[0].toUpperCase(),
+        }));
+
+        // Migration Check
+        const migratedKey = `pantry_migrated_${userId}`;
+        const alreadyMigrated = await AsyncStorage.getItem(migratedKey);
+        
+        if (!alreadyMigrated) {
+          const localPantryRaw = await AsyncStorage.getItem('pantryItems');
+          if (localPantryRaw) {
+            const localPantry: FoodItem[] = JSON.parse(localPantryRaw);
+            // ONLY migrate items that are NOT the hardcoded samples (IDs 1-8)
+            const userCreatedItems = localPantry.filter(i => i.id.length > 2);
+            if (userCreatedItems.length > 0) {
+              await apiRequest('POST', '/api/pantry/migrate', { userId, items: userCreatedItems });
+            }
+          }
+          await AsyncStorage.setItem(migratedKey, 'true');
+          await AsyncStorage.removeItem('pantryItems');
+        }
+
+        // Fetch DB data
+        const [pantryRes, donationsRes] = await Promise.all([
+          apiRequest('GET', `/api/pantry?userId=${userId}`),
+          apiRequest('GET', `/api/donations?userId=${userId}`),
+        ]);
+
+        const pantryData: FoodItem[] = await pantryRes.json();
+        const donationsData: any[] = await donationsRes.json();
+
+        setPantryItems(pantryData); // Logged in user sees EXACTLY their DB items (even if 0)
+        setUserDonations(donationsData);
+
+        // Profile details from DB
+        try {
+          const profileRes = await apiRequest('GET', `/api/users/${userId}`);
+          if (profileRes.ok) {
+            const dbUser = await profileRes.json();
+            setProfile(prev => ({
+              ...prev,
+              name: dbUser.name ?? prev.name,
+              role: dbUser.role ?? prev.role,
+              userCategory: dbUser.userCategory ?? prev.userCategory,
+              entityType: dbUser.entityType ?? prev.entityType,
+              buildingName: dbUser.buildingName ?? prev.buildingName,
+              foodSaved: Number(dbUser.foodSaved) || 0,
+              donationsMade: Number(dbUser.donationsMade) || 0,
+              co2Reduced: Number(dbUser.co2Reduced) || 0,
+              mealsProvided: Number(dbUser.mealsProvided) || 0,
+              avatar: dbUser.avatar || (dbUser.name ?? dbUser.email ?? '?')[0].toUpperCase(),
+            }));
+          }
+        } catch { /* ignore profile fetch error */ }
+
+      } catch (err) {
+        console.error('Loading user data failed:', err);
+        // On error, we provide an empty list for safety rather than sample data
+        setPantryItems([]); 
+      } finally {
+        setIsLoaded(true);
       }
-      setIsLoaded(true);
     };
-    load();
+
+    // Initial session check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      loadData(session);
+    });
+
+    // Listen for auth changes
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
+        loadData(session);
+      }
+    });
+    subscription = data.subscription;
+
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, []);
 
+  // Persist guest pantry items locally
   useEffect(() => {
-    if (isLoaded) AsyncStorage.setItem('pantryItems', JSON.stringify(pantryItems));
+    const persistGuest = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session && isLoaded) {
+        AsyncStorage.setItem('pantryItems', JSON.stringify(pantryItems));
+      }
+    };
+    persistGuest();
   }, [pantryItems, isLoaded]);
 
-  useEffect(() => {
-    if (isLoaded) AsyncStorage.setItem('userDonations', JSON.stringify(userDonations));
-  }, [userDonations, isLoaded]);
-
-  useEffect(() => {
-    if (isLoaded) AsyncStorage.setItem('notifications', JSON.stringify(notifications));
-  }, [notifications, isLoaded]);
-
+  // Persist settings to AsyncStorage
   useEffect(() => {
     if (isLoaded) AsyncStorage.setItem('settings', JSON.stringify(settings));
   }, [settings, isLoaded]);
 
-  const addFoodItem = (item: Omit<FoodItem, 'id' | 'addedAt'>) => {
-    const newItem: FoodItem = { ...item, id: generateId(), addedAt: Date.now() };
-    setPantryItems(prev => [newItem, ...prev]);
+  const addFoodItem = async (item: Omit<FoodItem, 'id' | 'addedAt'>) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      // Offline fallback
+      const newItem: FoodItem = { ...item, id: generateId(), addedAt: Date.now() };
+      setPantryItems(prev => [newItem, ...prev]);
+      return;
+    }
+    try {
+      const res = await apiRequest('POST', '/api/pantry', {
+        ...item,
+        userId: session.user.id,
+      });
+      const newItem: FoodItem = await res.json();
+      setPantryItems(prev => [newItem, ...prev]);
+    } catch {
+      // Fallback to local
+      const newItem: FoodItem = { ...item, id: generateId(), addedAt: Date.now() };
+      setPantryItems(prev => [newItem, ...prev]);
+    }
   };
 
-  const removeFoodItem = (id: string) => {
+  const removeFoodItem = async (id: string, action?: 'consume' | 'donate' | 'waste') => {
+    const itemToDelete = pantryItems.find(item => item.id === id);
+    
+    // Optimistic update
     setPantryItems(prev => prev.filter(item => item.id !== id));
+
+    if (itemToDelete && action === 'consume') {
+      const weight = calculateItemWeightKg(itemToDelete.quantity, itemToDelete.unit);
+      const roundedWeight = Math.round(weight * 10) / 10;
+      const co2 = Math.round(weight * 2.5 * 10) / 10;
+      const meals = Math.round(weight * 2);
+
+      const newStats = {
+        foodSaved: Math.round((profile.foodSaved + roundedWeight) * 10) / 10,
+        co2Reduced: Math.round((profile.co2Reduced + co2) * 10) / 10,
+        mealsProvided: profile.mealsProvided + meals,
+      };
+
+      await updateProfile(newStats);
+    }
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    try {
+      await apiRequest('DELETE', `/api/pantry/${id}?userId=${session.user.id}`);
+    } catch {
+      // If server delete fails, item was already removed locally — acceptable
+    }
+  };
+
+  const removeAllExpiredItems = async () => {
+    const expiredIds = pantryItems.filter(item => getDaysRemaining(item.expiryDate) < 0).map(i => i.id);
+    if (expiredIds.length === 0) return;
+
+    // Optimistic update
+    setPantryItems(prev => prev.filter(item => getDaysRemaining(item.expiryDate) >= 0));
+    
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    
+    try {
+      await Promise.all(
+        expiredIds.map(id => apiRequest('DELETE', `/api/pantry/${id}?userId=${session.user.id}`))
+      );
+    } catch {
+      // Silent catch
+    }
+  };
+
+  const postDonation = async (itemIds: string[], _note?: string, communityId?: string, isBulk?: boolean, bulkItems?: string[]) => {
+    let itemsNames: string[] = [];
+    let roundedWeight = 0;
+    let co2 = 0;
+    let meals = 0;
+
+    if (isBulk && bulkItems) {
+      itemsNames = bulkItems;
+      // Heuristic: Bulk donations represent a lot of weight, we can estimate or pass weight directly.
+      // Let's assume 10kg average for a bulk generic donation for stats if not calculated.
+      roundedWeight = 10;
+      co2 = 25;
+      meals = 20;
+    } else {
+      const itemsToDonate = pantryItems.filter(item => itemIds.includes(item.id));
+      itemsNames = itemsToDonate.map(item => item.name);
+      
+      let totalWeight = 0;
+      itemsToDonate.forEach(item => {
+        totalWeight += calculateItemWeightKg(item.quantity, item.unit);
+      });
+      
+      roundedWeight = Math.round(totalWeight * 10) / 10;
+      co2 = Math.round(totalWeight * 2.5 * 10) / 10;
+      meals = Math.round(totalWeight * 2);
+    }
+
+    // Optimistically update local profile stats
+    setProfile(prev => ({ 
+      ...prev, 
+      donationsMade: prev.donationsMade + 1,
+      foodSaved: Math.round((prev.foodSaved + roundedWeight) * 10) / 10,
+      co2Reduced: Math.round((prev.co2Reduced + co2) * 10) / 10,
+      mealsProvided: prev.mealsProvided + meals,
+    }));
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      const donation: UserDonation = { id: generateId(), title: itemsNames.join(', '), foodCategory: 'Other', quantity: '1', unit: 'batch', postedAt: Date.now(), status: 'pending' };
+      setUserDonations(prev => [donation, ...prev]);
+      return;
+    }
+    try {
+      const payload: any = { 
+        userId: session.user.id, 
+        title: itemsNames.join(', '), 
+        foodCategory: 'Other', 
+        quantity: '1', 
+        unit: 'batch', 
+        visibility: communityId ? 'community' : 'public'
+      };
+      if (communityId) payload.communityId = communityId;
+
+      const res = await apiRequest('POST', '/api/donations', payload);
+      const donation = await res.json();
+      
+      setUserDonations(prev => [donation, ...prev]);
+
+      // Update server-side profile stats
+      await apiRequest('PATCH', `/api/users/${session.user.id}`, { 
+        donationsMade: profile.donationsMade + 1,
+        foodSaved: Math.round((profile.foodSaved + roundedWeight) * 10) / 10,
+        co2Reduced: Math.round((profile.co2Reduced + co2) * 10) / 10,
+        mealsProvided: profile.mealsProvided + meals,
+      });
+    } catch {
+      const donation: UserDonation = { id: generateId(), title: itemsNames.join(', '), foodCategory: 'Other', quantity: '1', unit: 'batch', postedAt: Date.now(), status: 'pending' };
+      setUserDonations(prev => [donation, ...prev]);
+    }
+  };
+
+  const updateProfile = async (data: { 
+    name?: string; 
+    role?: string; 
+    userCategory?: UserCategory;
+    entityType?: string;
+    buildingName?: string;
+    avatar?: string;
+    foodSaved?: number;
+    donationsMade?: number;
+    co2Reduced?: number;
+    mealsProvided?: number;
+  }) => {
+    // Optimistic Local Fallback (applies instantly)
+    setProfile(prev => ({
+      ...prev,
+      name: data.name ?? prev.name,
+      role: (data.role as any) ?? prev.role,
+      userCategory: data.userCategory ?? prev.userCategory,
+      entityType: data.entityType !== undefined ? data.entityType : prev.entityType,
+      buildingName: data.buildingName !== undefined ? data.buildingName : prev.buildingName,
+      avatar: data.avatar ?? prev.avatar,
+      foodSaved: data.foodSaved !== undefined ? data.foodSaved : prev.foodSaved,
+      donationsMade: data.donationsMade !== undefined ? data.donationsMade : prev.donationsMade,
+      co2Reduced: data.co2Reduced !== undefined ? data.co2Reduced : prev.co2Reduced,
+      mealsProvided: data.mealsProvided !== undefined ? data.mealsProvided : prev.mealsProvided,
+    }));
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return; // Works locally in offline mode!
+      
+      const res = await apiRequest("PATCH", `/api/users/${session.user.id}`, data);
+      const updated = await res.json();
+      
+      // Sync confirmed state
+      setProfile(prev => ({
+        ...prev,
+        name: updated.name ?? prev.name,
+        role: updated.role ?? prev.role,
+        userCategory: updated.userCategory ?? prev.userCategory,
+        entityType: updated.entityType ?? prev.entityType,
+        buildingName: updated.buildingName ?? prev.buildingName,
+        avatar: updated.avatar || (updated.name ?? updated.email ?? "?")[0].toUpperCase(),
+        foodSaved: Number(updated.foodSaved) || 0,
+        donationsMade: Number(updated.donationsMade) || 0,
+        co2Reduced: Number(updated.co2Reduced) || 0,
+        mealsProvided: Number(updated.mealsProvided) || 0,
+      }));
+    } catch (err) {
+      // Network failed or API error - we silently gracefully handle it
+      // The optimistic local state is already applied!
+    }
   };
 
   const updateSettings = (newSettings: Partial<AppSettings>) => {
@@ -301,26 +553,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
   };
 
-  const postDonation = (items: string[], _note?: string) => {
-    const donation: UserDonation = {
-      id: generateId(),
-      items,
-      postedAt: Date.now(),
-      status: 'pending',
-    };
-    setUserDonations(prev => [donation, ...prev]);
-  };
-
   const getExpiringItems = () => {
     return pantryItems.filter(item => {
       const days = getDaysRemaining(item.expiryDate);
-      return days >= 0 && days <= 3;
+      return days >= 0 && days <= 6;
     }).sort((a, b) => getDaysRemaining(a.expiryDate) - getDaysRemaining(b.expiryDate));
+  };
+
+  const generateRecipes = async () => {
+    const validItems = pantryItems.filter(item => getDaysRemaining(item.expiryDate) >= 0);
+    
+    if (validItems.length === 0) {
+      alert("Add some non-expired items to your pantry first!");
+      return;
+    }
+
+    const urgentIngredients = validItems
+      .filter(item => getDaysRemaining(item.expiryDate) <= 3)
+      .map(item => item.name);
+
+    const normalIngredients = validItems
+      .filter(item => getDaysRemaining(item.expiryDate) > 3)
+      .map(item => item.name);
+
+    setIsGeneratingRecipes(true);
+    try {
+      const res = await apiRequest('POST', '/api/recipes/suggest', {
+        urgentIngredients,
+        normalIngredients
+      });
+      const data = await res.json();
+      if (data.recipes) {
+        setRecipes(data.recipes);
+      }
+    } catch (err) {
+      console.error("Failed to generate recipes:", err);
+    } finally {
+      setIsGeneratingRecipes(false);
+    }
   };
 
   const value = useMemo(() => ({
     pantryItems,
-    recipes: INITIAL_RECIPES,
+    recipes,
     nearbyDonations: INITIAL_NEARBY,
     userDonations,
     notifications,
@@ -332,11 +607,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     markNotificationRead,
     clearAllNotifications,
     postDonation,
+    updateProfile,
     getExpiryStatus,
     getDaysRemaining,
     getExpiringItems,
+    removeAllExpiredItems,
     isLoaded,
-  }), [pantryItems, userDonations, notifications, settings, profile, isLoaded]);
+    isGeneratingRecipes,
+    generateRecipes,
+  }), [pantryItems, recipes, userDonations, notifications, settings, profile, isLoaded, isGeneratingRecipes]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
@@ -345,4 +624,11 @@ export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('useApp must be used within AppProvider');
   return ctx;
+}
+
+export function useIsDark(): boolean {
+  const { settings } = useApp();
+  const systemScheme = useColorScheme();
+  if (settings.darkMode !== undefined) return settings.darkMode;
+  return systemScheme === 'dark';
 }
