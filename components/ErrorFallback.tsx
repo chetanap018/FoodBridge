@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { reloadAppAsync } from "expo";
+import { useApp, useIsDark } from '@/context/AppContext';
 import {
   StyleSheet,
   View,
@@ -7,7 +8,6 @@ import {
   ScrollView,
   Text,
   Modal,
-  useColorScheme,
   Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -19,8 +19,7 @@ export type ErrorFallbackProps = {
 };
 
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
+  const isDark = useIsDark();
   const insets = useSafeAreaInsets();
 
   const theme = {
