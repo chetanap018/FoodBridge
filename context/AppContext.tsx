@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import { useColorScheme } from 'react-native';
+import { useColorScheme, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
 import { Session } from '@supabase/supabase-js';
@@ -270,9 +270,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         // Fetch DB data
-        const [pantryRes, donationsRes] = await Promise.all([
+        const [pantryRes, donationsRes, notifRes] = await Promise.all([
           apiRequest('GET', `/api/pantry?userId=${userId}`),
           apiRequest('GET', `/api/donations?userId=${userId}`),
+          apiRequest('GET', '/api/notifications'),
         ]);
 
         const pantryData: FoodItem[] = await pantryRes.json();
@@ -280,6 +281,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         setPantryItems(pantryData); // Logged in user sees EXACTLY their DB items (even if 0)
         setUserDonations(donationsData);
+
+        // Fetch server notifications and merge with any local ones
+        try {
+          if (notifRes.ok) {
+            const serverNotifs: any[] = await notifRes.json();
+            if (Array.isArray(serverNotifs) && serverNotifs.length > 0) {
+              const mapped: Notification[] = serverNotifs.map((n: any) => ({
+                id: n.id,
+                type: (n.type === 'alert' ? 'expiry' : n.type) as Notification['type'],
+                message: n.message,
+                timestamp: n.timestamp ? (typeof n.timestamp === 'number' ? n.timestamp * 1000 : new Date(n.timestamp).getTime()) : Date.now(),
+                read: n.read,
+              }));
+              setNotifications(mapped);
+            }
+          }
+        } catch { /* ignore notification fetch error */ }
 
         // Profile details from DB
         try {
@@ -474,12 +492,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       
       setUserDonations(prev => [donation, ...prev]);
 
-      // Update server-side profile stats
-      await apiRequest('PATCH', `/api/users/${session.user.id}`, { 
-        donationsMade: profile.donationsMade + 1,
-        foodSaved: Math.round((profile.foodSaved + roundedWeight) * 10) / 10,
-        co2Reduced: Math.round((profile.co2Reduced + co2) * 10) / 10,
-        mealsProvided: profile.mealsProvided + meals,
+      // Update server-side profile stats — use functional update to avoid stale closure
+      setProfile(prev => {
+        const newStats = {
+          donationsMade: prev.donationsMade,
+          foodSaved: Math.round((prev.foodSaved + roundedWeight) * 10) / 10,
+          co2Reduced: Math.round((prev.co2Reduced + co2) * 10) / 10,
+          mealsProvided: prev.mealsProvided + meals,
+        };
+        apiRequest('PATCH', `/api/users/${session.user.id}`, {
+          donationsMade: newStats.donationsMade,
+          foodSaved: newStats.foodSaved,
+          co2Reduced: newStats.co2Reduced,
+          mealsProvided: newStats.mealsProvided,
+        }).catch(() => {});
+        return prev; // Don't double-update, stats were already set optimistically above
       });
     } catch {
       const donation: UserDonation = { id: generateId(), title: itemsNames.join(', '), foodCategory: 'Other', quantity: '1', unit: 'batch', postedAt: Date.now(), status: 'pending' };
@@ -547,10 +574,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const markNotificationRead = (id: string) => {
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    // Sync to server (best-effort)
+    apiRequest('PATCH', `/api/notifications/${id}/read`).catch(() => {});
   };
 
   const clearAllNotifications = () => {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    // Sync to server (best-effort)
+    apiRequest('PATCH', '/api/notifications/clear-all').catch(() => {});
   };
 
   const getExpiringItems = () => {
@@ -564,7 +595,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const validItems = pantryItems.filter(item => getDaysRemaining(item.expiryDate) >= 0);
     
     if (validItems.length === 0) {
-      alert("Add some non-expired items to your pantry first!");
+      Alert.alert("Empty Pantry", "Add some non-expired items to your pantry first!");
       return;
     }
 
