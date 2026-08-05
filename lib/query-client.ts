@@ -2,6 +2,14 @@ import { Platform } from "react-native";
 import { fetch } from "expo/fetch";
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+/** Default request timeout in milliseconds (30 seconds) */
+const DEFAULT_TIMEOUT_MS = 30_000;
+/** Extended timeout for AI-heavy endpoints like donation analysis (60 seconds) */
+const EXTENDED_TIMEOUT_MS = 60_000;
+
+/** Routes that may involve AI processing and need a longer timeout */
+const AI_ROUTES = ["/api/donations/analyze-and-create", "/api/scan", "/api/scan-receipt", "/api/recipes/suggest"];
+
 /**
  * Gets the base URL for the Express API server (e.g., "http://localhost:4000")
  * @returns {string} The API base URL
@@ -32,14 +40,65 @@ export function getApiUrl(): string {
   const protocol = isLocal ? 'http' : 'https';
   let url = new URL(`${protocol}://${host}`);
 
-  console.log(`[getApiUrl] ${Platform.OS} target: ${url.href}`);
+  if (__DEV__) {
+    console.log(`[getApiUrl] ${Platform.OS} target: ${url.href}`);
+  }
   return url.href;
 }
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    // Try to parse JSON error responses for a cleaner user-facing message
+    let message = `${res.status}: ${text}`;
+    try {
+      const json = JSON.parse(text);
+      if (json.error || json.message) {
+        message = json.error || json.message;
+      }
+    } catch {
+      // Not JSON — use the raw text
+    }
+    throw new Error(message);
+  }
+}
+
+/**
+ * Wraps a fetch call with an AbortController-based timeout so that
+ * unreachable servers or hanging requests don't buffer indefinitely.
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    // Build options compatible with expo/fetch's FetchRequestInit type
+    // (expo/fetch doesn't accept `null` for body, only `undefined`)
+    const fetchOptions: Record<string, any> = { ...options, signal: controller.signal };
+    if (fetchOptions.body === null) {
+      delete fetchOptions.body;
+    }
+    const res = await fetch(url, fetchOptions);
+    return res;
+  } catch (err: any) {
+    if (err.name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${timeoutMs / 1000}s. Please check your network connection and ensure the server is running.`
+      );
+    }
+    // Enhance network errors with a helpful message
+    if (err.message && (err.message.includes("Network request failed") || err.message.includes("fetch"))) {
+      throw new Error(
+        `Cannot connect to server at ${url}. Please ensure the server is running and reachable.`
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -51,12 +110,19 @@ export async function apiRequest(
   const baseUrl = getApiUrl();
   const url = new URL(route, baseUrl);
 
-  const res = await fetch(url.toString(), {
-    method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
-  });
+  // Use extended timeout for AI-heavy endpoints
+  const timeout = AI_ROUTES.some((r) => route.startsWith(r)) ? EXTENDED_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+
+  const res = await fetchWithTimeout(
+    url.toString(),
+    {
+      method,
+      headers: data ? { "Content-Type": "application/json" } : {},
+      body: data ? JSON.stringify(data) : undefined,
+      credentials: "include",
+    },
+    timeout,
+  );
 
   await throwIfResNotOk(res);
   return res;
@@ -71,9 +137,11 @@ export const getQueryFn: <T>(options: {
       const baseUrl = getApiUrl();
       const url = new URL(queryKey.join("/") as string, baseUrl);
 
-      const res = await fetch(url.toString(), {
-        credentials: "include",
-      });
+      const res = await fetchWithTimeout(
+        url.toString(),
+        { credentials: "include" },
+        DEFAULT_TIMEOUT_MS,
+      );
 
       if (unauthorizedBehavior === "returnNull" && res.status === 401) {
         return null;
@@ -89,8 +157,8 @@ export const queryClient = new QueryClient({
       queryFn: getQueryFn({ on401: "throw" }),
       refetchInterval: false,
       refetchOnWindowFocus: false,
-      staleTime: Infinity,
-      retry: false,
+      staleTime: 60_000,
+      retry: 1,
     },
     mutations: {
       retry: false,
