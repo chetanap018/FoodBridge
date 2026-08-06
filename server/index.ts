@@ -211,6 +211,31 @@ function configureExpoAndLanding(app: express.Application) {
   log("Expo routing: Checking expo-platform header on / and /manifest");
 }
 
+function setupRequestTimeout(app: express.Application) {
+  // Set a 90-second timeout for all API requests.
+  // If a request takes longer than this, respond with a 504 Gateway Timeout.
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    // Only apply to API routes
+    if (!req.path.startsWith("/api")) {
+      return next();
+    }
+
+    const timeoutMs = 90_000;
+    const timer = setTimeout(() => {
+      if (!res.headersSent) {
+        console.error(`Request timeout: ${req.method} ${req.path} exceeded ${timeoutMs / 1000}s`);
+        res.status(504).json({ error: "Request timed out. Please try again." });
+      }
+    }, timeoutMs);
+
+    // Clear the timeout when the response finishes
+    res.on("finish", () => clearTimeout(timer));
+    res.on("close", () => clearTimeout(timer));
+
+    next();
+  });
+}
+
 function setupErrorHandler(app: express.Application) {
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     const error = err as {
@@ -236,6 +261,7 @@ function setupErrorHandler(app: express.Application) {
   setupCors(app);
   setupBodyParsing(app);
   setupRequestLogging(app);
+  setupRequestTimeout(app);
 
   configureExpoAndLanding(app);
 

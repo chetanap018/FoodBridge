@@ -1,7 +1,25 @@
 import { type Donation, type User } from "@shared/schema";
+import { 
+  DISTANCE_SCORE_DECAY_PER_KM, 
+  MAX_DISTANCE_KM, 
+  DEFAULT_DISTANCE_SCORE,
+  URGENCY_THRESHOLD_HOURS,
+  URGENCY_MULTIPLIER,
+  CATEGORY_SCORE_HOUSEHOLD,
+  CATEGORY_SCORE_PURE_RECEIVER,
+  CATEGORY_SCORE_DEFAULT,
+  ACTIVITY_SCORE_MAX,
+  ACTIVITY_SCORE_FACTOR,
+  DISTANCE_WEIGHT,
+  CATEGORY_WEIGHT,
+  ACTIVITY_WEIGHT,
+  ESCALATION_WINDOW_URGENT,
+  ESCALATION_WINDOW_SOON,
+  ESCALATION_WINDOW_NO_EXPIRY,
+} from "./constants";
 
 // Haversine formula to calculate distance between two lat/lng coordinates in kilometers
-function calculateDistanceKM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+export function calculateDistanceKM(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371; // Radius of the earth in km
   const dLat = deg2rad(lat2 - lat1);
   const dLon = deg2rad(lon2 - lon1);
@@ -56,29 +74,28 @@ export function calculateMatchScores(donation: Donation, potentialReceivers: Use
     // 1. Distance Calculation
     if (donation.latitude && donation.longitude && receiver.latitude && receiver.longitude) {
       distanceKm = calculateDistanceKM(donation.latitude, donation.longitude, receiver.latitude, receiver.longitude);
-      // Distance score: 100 if 0km away, drops to 0 at 20km
-      distanceScore = Math.max(0, 100 - (distanceKm * 5));
+    // Distance score: 100 if 0km away, drops to 0 at max distance
+    distanceScore = Math.max(0, 100 - (distanceKm * DISTANCE_SCORE_DECAY_PER_KM));
     }
 
     // 2. Expiry & Urgency Factor
-    // If it expires in < 5 hours, closer distance matters MORE.
+    // If it expires in < threshold hours, closer distance matters MORE.
     let urgencyFactor = 1.0;
-    if (hoursUntilExpiry < 5) {
-      urgencyFactor = 1.5; // Boost closer matches
+    if (hoursUntilExpiry < URGENCY_THRESHOLD_HOURS) {
+      urgencyFactor = URGENCY_MULTIPLIER; // Boost closer matches
     }
 
     // 3. Category matching (e.g. NGOs might be better for large quantities, but for now we just weight them)
-    let categoryScore = 50;
-    if (receiver.userCategory === 'Household') categoryScore = 80;
-    if (receiver.userCategory === 'Pure Receiver') categoryScore = 90; // Dedicated NGOs/Banks
+    let categoryScore = CATEGORY_SCORE_DEFAULT;
+    if (receiver.userCategory === 'Household') categoryScore = CATEGORY_SCORE_HOUSEHOLD;
+    if (receiver.userCategory === 'Pure Receiver') categoryScore = CATEGORY_SCORE_PURE_RECEIVER; // Dedicated NGOs/Banks
 
     // 4. Activity Factor (past acceptance history could be calculated from foodSaved)
     // Small boost for active users
-    let activityScore = Math.min(20, (receiver.foodSaved || 0) * 0.1);
+    let activityScore = Math.min(ACTIVITY_SCORE_MAX, (receiver.foodSaved || 0) * ACTIVITY_SCORE_FACTOR);
 
     // Final Weighted Heuristic
-    // 50% Distance, 30% Category, 20% Activity (with Urgency multiplier)
-    let finalScore = (distanceScore * 0.5 * urgencyFactor) + (categoryScore * 0.3) + activityScore;
+    let finalScore = (distanceScore * DISTANCE_WEIGHT * urgencyFactor) + (categoryScore * CATEGORY_WEIGHT) + activityScore;
     
     // Normalize to 0-100
     finalScore = Math.min(100, Math.max(0, finalScore));
@@ -106,10 +123,10 @@ export function getEscalationWindowHours(expiryTime: Date | null): number {
   const diffHours = (expiryTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
   if (diffHours <= 24) {
-    return 2; // Expiring today -> 2 hours window
+    return ESCALATION_WINDOW_URGENT; // Expiring today -> 2 hours window
   } else if (diffHours <= 48) {
-    return 6; // Expiring tomorrow -> 6 hours window
+    return ESCALATION_WINDOW_SOON; // Expiring tomorrow -> 6 hours window
   } else {
-    return 12; // Far future -> 12 hours window
+    return ESCALATION_WINDOW_NO_EXPIRY; // Far future -> 12 hours window
   }
 }

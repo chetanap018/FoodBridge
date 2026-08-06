@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "@shared/schema";
 import { Pool } from "pg";
 import { eq, and, desc, isNull, gt, or, sql } from "drizzle-orm";
+import { randomInt } from "crypto";
 import {
   users, pantryItems, donations, notifications, communities, peerRequests, matches,
   communityMembers, communityJoinRequests,
@@ -18,13 +19,34 @@ import {
   type CommunityJoinRequest, type InsertCommunityJoinRequest
 } from "@shared/schema";
 
+import { DB_CONNECTION_TIMEOUT_MS, DB_IDLE_TIMEOUT_MS, DB_MAX_CONNECTIONS } from "./constants";
+
+// Singleton database connection pool
+let pool: Pool | null = null;
+
 function getDb() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL not set");
-  const pool = new Pool({
-    connectionString,
-    ssl: { rejectUnauthorized: false },
-  });
+  
+  // Create pool only once (singleton pattern)
+  if (!pool) {
+    pool = new Pool({
+      connectionString,
+      ssl: { rejectUnauthorized: false },
+      // Connection timeout — fail fast instead of hanging forever
+      connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
+      // How long a client is allowed to remain idle before being closed
+      idleTimeoutMillis: DB_IDLE_TIMEOUT_MS,
+      // Max connections in the pool
+      max: DB_MAX_CONNECTIONS,
+    });
+
+    // Log pool errors so they don't silently hang requests
+    pool.on('error', (err) => {
+      console.error('Unexpected error on idle database client:', err);
+    });
+  }
+
   return drizzle(pool, { schema });
 }
 
@@ -95,12 +117,6 @@ export class DbStorage implements IStorage {
   }
 
   async getUsersByCommunity(communityId: string): Promise<User[]> {
-    const members = await db.select().from(communityMembers).where(eq(communityMembers.communityId, communityId));
-    if (members.length === 0) return [];
-    const userIds = members.map(m => m.userId);
-    // Since we don't have an "in" operator handy imported, we can query them one by one or import 'inArray'.
-    // Let's import 'inArray' from drizzle-orm dynamically or use a join.
-    // Better yet, just use a join:
     const result = await db.select({ user: users })
       .from(users)
       .innerJoin(communityMembers, eq(users.id, communityMembers.userId))
@@ -128,7 +144,6 @@ export class DbStorage implements IStorage {
       .onConflictDoUpdate({
         target: users.email,
         set: { 
-          id,
           name: name ?? null,
           role: role ?? "Donor",
           userCategory: userCategory ?? "Household",
@@ -152,13 +167,15 @@ export class DbStorage implements IStorage {
   // ── Communities ────────────────────────────────────
   
   async listCommunities(): Promise<(Community & { memberCount: number })[]> {
-    const allComms = await db.select().from(communities);
-    const result = [];
-    for (const comm of allComms) {
-      const members = await db.select().from(communityMembers).where(eq(communityMembers.communityId, comm.id));
-      result.push({ ...comm, memberCount: members.length });
-    }
-    return result;
+    const rows = await db.select({
+      community: communities,
+      memberCount: sql<number>`count(${communityMembers.userId})::int`,
+    })
+    .from(communities)
+    .leftJoin(communityMembers, eq(communities.id, communityMembers.communityId))
+    .groupBy(communities.id);
+    
+    return rows.map(r => ({ ...r.community, memberCount: r.memberCount }));
   }
 
   async getCommunity(id: string): Promise<Community | undefined> {
@@ -449,8 +466,8 @@ export class DbStorage implements IStorage {
           return { success: false, error: 'Donation is no longer available.' };
         }
 
-        // Generate 4-digit OTP
-        const otp = Math.floor(1000 + Math.random() * 9000).toString();
+        // Generate cryptographically secure 4-digit OTP
+        const otp = randomInt(1000, 9999).toString();
 
         const newMatch = await tx.insert(matches).values({
           donationId,
@@ -550,7 +567,7 @@ export class DbStorage implements IStorage {
   }
 
   async clearAllNotifications(): Promise<void> {
-    await db.update(notifications).set({ read: true });
+    await db.delete(notifications);
   }
 
   async createNotification(notif: any): Promise<void> {

@@ -2,26 +2,84 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import express, { type Express, type Request, type Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { calculateMatchScores, getEscalationWindowHours } from "./matching-engine";
+import { calculateMatchScores, getEscalationWindowHours, calculateDistanceKM } from "./matching-engine";
+import {
+  GEMINI_API_TIMEOUT_MS,
+  AI_RETRY_DELAY_MS,
+  AI_MAX_RETRIES,
+  RADAR_MAX_DISTANCE_KM,
+  PEER_REQUEST_MAX_AGE_HOURS,
+  MAX_ESCALATION_LEVEL,
+  OTP_MIN_VALUE,
+  OTP_MAX_VALUE,
+  COMMUNITY_DEFAULT_MAX_MEMBERS,
+  COMMUNITY_DEFAULT_TYPE,
+  COMMUNITY_DEFAULT_JOIN_TYPE,
+} from "./constants";
+import {
+  authSyncSchema,
+  pantryMigrationSchema,
+  createDonationSchema,
+  analyzeAndCreateDonationSchema,
+  createCommunitySchema,
+  joinCommunitySchema,
+  leaveCommunitySchema,
+  updateJoinRequestSchema,
+  acceptMatchSchema,
+  verifyMatchSchema,
+  recipeSuggestionSchema,
+  scanSchema,
+  receiptScanSchema,
+  updateUserSchema,
+  validateBody,
+} from "./validation";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
-  async function generateContentWithRetry(contents: any, retries = 3, delayMs = 1500): Promise<any> {
+  /**
+   * Wraps a promise with a timeout so that hanging AI API calls
+   * don't block the request indefinitely.
+   */
+  function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label = "Operation"): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`));
+      }, timeoutMs);
+
+      promise
+        .then((result) => {
+          clearTimeout(timer);
+          resolve(result);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
+  async function generateContentWithRetry(contents: any, retries = AI_MAX_RETRIES, delayMs = AI_RETRY_DELAY_MS): Promise<any> {
     let lastError: any;
     const models = ["gemini-2.5-flash"];
+    const GEMINI_TIMEOUT_MS = GEMINI_API_TIMEOUT_MS;
     
     for (const modelName of models) {
       const model = genAI.getGenerativeModel({ model: modelName });
       for (let i = 0; i < retries; i++) {
         try {
           console.log(`Calling Gemini API using model ${modelName} (attempt ${i + 1}/${retries})...`);
-          return await model.generateContent(contents);
+          return await withTimeout(
+            model.generateContent(contents),
+            GEMINI_TIMEOUT_MS,
+            `Gemini API (${modelName})`
+          );
         } catch (err: any) {
           lastError = err;
           const status = err.status || (err.message && (err.message.includes("503") || err.message.includes("429")));
-          if (status && i < retries - 1) {
-            console.warn(`Gemini API returned status ${status || 'transient error'}. Retrying in ${delayMs}ms...`);
+          const isTimeout = err.message && err.message.includes("timed out");
+          if ((status || isTimeout) && i < retries - 1) {
+            console.warn(`Gemini API returned ${status || 'timeout'} on ${modelName}. Retrying in ${delayMs}ms...`);
             await new Promise(resolve => setTimeout(resolve, delayMs));
             delayMs *= 2; // exponential backoff
             continue;
@@ -34,10 +92,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   // ── Auth Sync ────────────────────────────────────────
-  app.post("/api/auth/sync", async (req: Request, res: Response) => {
+  app.post("/api/auth/sync", validateBody(authSyncSchema), async (req: Request, res: Response) => {
     try {
       const { id, email, name, role, userCategory, entityType, buildingName, avatar } = req.body;
-      if (!id || !email) return res.status(400).json({ error: "id and email are required" });
       const user = await storage.upsertUser({ 
         id, 
         email, 
@@ -94,18 +151,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = (req.query.userId as string) as string;
       if (!userId) return res.status(400).json({ error: "userId is required" });
       const items = await storage.getPantryItems(userId);
-      res.json(items);
+      return res.json(items);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: err.message });
     }
   });
 
   app.post("/api/pantry", async (req: Request, res: Response) => {
     try {
       const item = await storage.addPantryItem(req.body);
-      res.status(201).json(item);
+      return res.status(201).json(item);
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      return res.status(400).json({ error: err.message });
     }
   });
 
@@ -122,12 +179,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Bulk migrate AsyncStorage items to DB
-  app.post("/api/pantry/migrate", async (req: Request, res: Response) => {
+  app.post("/api/pantry/migrate", validateBody(pantryMigrationSchema), async (req: Request, res: Response) => {
     try {
       const { userId, items } = req.body;
-      if (!userId || !Array.isArray(items)) {
-        return res.status(400).json({ error: "userId and items array required" });
-      }
       console.log(`Migrating ${items.length} items for user ${userId}`);
       const itemsWithUserId = items.map((item: any) => ({ ...item, userId }));
       await storage.migratePantryItems(itemsWithUserId);
@@ -139,19 +193,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── Donations ────────────────────────────────────────
-  
-  // Helper for Haversine distance
-  function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-    const R = 6371; // Earth's radius in km
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
+   
   // Radar endpoint for finding food
   app.get("/api/donations/radar", async (req: Request, res: Response) => {
     try {
@@ -203,7 +245,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Calculate real distance if lat/lng available, otherwise default to 0 for demo/backwards compatibility
         let distanceKm = 0;
         if (user.latitude && user.longitude && donor?.latitude && donor?.longitude) {
-           distanceKm = calculateDistance(user.latitude, user.longitude, donor.latitude, donor.longitude);
+           distanceKm = calculateDistanceKM(user.latitude, user.longitude, donor.latitude, donor.longitude);
         }
 
         return {
@@ -219,7 +261,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           postedAt: new Date(d.postedAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           available: d.status === 'active'
         };
-      }).filter(d => d.distanceKm <= 5.0); // Strict 5km global boundary filter
+        }).filter(d => d.distanceKm <= RADAR_MAX_DISTANCE_KM); // Strict 5km global boundary filter
 
       res.json(formatted);
     } catch (err: any) {
@@ -232,18 +274,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const userId = (req.query.userId as string) as string;
       if (!userId) return res.status(400).json({ error: "userId is required" });
       const donations = await storage.getDonations(userId);
-      res.json(donations);
+      return res.json(donations);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/donations", async (req: Request, res: Response) => {
+  app.post("/api/donations", validateBody(createDonationSchema), async (req: Request, res: Response) => {
     try {
       const { userId, communityId, title, foodCategory, quantity, unit, visibility, metadata, aiAnalysis, images, latitude, longitude, expiryTime } = req.body;
-      if (!userId || !title) {
-        return res.status(400).json({ error: "userId and title required" });
-      }
       
       const user = await storage.getUser(userId);
       if (!user) return res.status(404).json({ error: "User not found" });
@@ -285,15 +324,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/donations/analyze-and-create", async (req: Request, res: Response) => {
+  app.post("/api/donations/analyze-and-create", validateBody(analyzeAndCreateDonationSchema), async (req: Request, res: Response) => {
     try {
       const { 
         userId, communityId, title, foodCategory, quantity, unit, visibility, metadata, imagesBase64, latitude, longitude, expiryTime 
       } = req.body;
-
-      if (!userId || !title) {
-        return res.status(400).json({ error: "userId and title required" });
-      }
 
       let aiAnalysis = null;
       if (imagesBase64 && imagesBase64.length > 0) {
@@ -367,12 +402,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (donation.communityId) {
          potentialReceivers = await storage.getUsersByCommunity(donation.communityId);
       } else {
-         // Global donation (Bulk from Pure Donors).
-         // Ideally, fetch all "Pure Receivers" in the system or nearby.
-         // Since we don't have a getAllUsers with filters, we will just fetch community users for now as a fallback,
-         // but in reality we would do:
-         // potentialReceivers = await storage.getUsersByCategory('Pure Receiver');
-         potentialReceivers = []; // Need to add getAllUsers to storage if we want this fully fleshed out
+         // Global donation (Bulk from Pure Donors) — fetch all community members
+         // from all communities the donor is part of, plus all Pure Receivers/NGOs
+         const donorCommunities = await storage.getUserCommunities(donation.userId);
+         const receiverSet = new Map<string, any>();
+         for (const comm of donorCommunities) {
+           const members = await storage.getCommunityMembers(comm.id);
+           for (const m of members) {
+             if (m.id !== donation.userId) receiverSet.set(m.id, m);
+           }
+         }
+         potentialReceivers = Array.from(receiverSet.values());
       }
 
       const matches = calculateMatchScores(donation, potentialReceivers);
@@ -395,7 +435,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const hoursActive = (now.getTime() - new Date(donation.postedAt * 1000).getTime()) / (1000 * 60 * 60);
 
         // If time active exceeds the window, escalate to the next tier
-        if (hoursActive >= windowHours && donation.escalationLevel < 4) {
+        if (hoursActive >= windowHours && donation.escalationLevel < MAX_ESCALATION_LEVEL) {
           await storage.updateDonationStatus(donation.id, 'active', donation.escalationLevel + 1);
           escalatedCount++;
           // In a real app: Send notifications to the new tier (Priority 2, 3, etc.)
@@ -417,7 +457,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const now = new Date();
       const validReqs = reqs.filter(r => {
         const ageHours = (now.getTime() - new Date(r.createdAt).getTime()) / (1000 * 60 * 60);
-        return ageHours < 24 && r.status === 'active';
+        return ageHours < PEER_REQUEST_MAX_AGE_HOURS && r.status === 'active';
       });
       res.json(validReqs);
     } catch (err: any) {
@@ -427,12 +467,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/peer-requests/:communityId", async (req: Request, res: Response) => {
     try {
-      const communityId = (req.query.communityId as string) as string;
+      const communityId = req.params.communityId as string;
       const reqs = await storage.getPeerRequests(communityId);
       const now = new Date();
       const validReqs = reqs.filter(r => {
         const ageHours = (now.getTime() - new Date(r.createdAt).getTime()) / (1000 * 60 * 60);
-        return ageHours < 24 && r.status === 'active';
+        return ageHours < PEER_REQUEST_MAX_AGE_HOURS && r.status === 'active';
       });
       res.json(validReqs);
     } catch (err: any) {
@@ -477,17 +517,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/community", async (req: Request, res: Response) => {
+  app.post("/api/community", validateBody(createCommunitySchema), async (req: Request, res: Response) => {
     try {
       const { name, type, maxMembers, address, joinType, adminId } = req.body;
-      if (!name || !adminId) return res.status(400).json({ error: "Name and adminId are required" });
 
       const community = await storage.createCommunity({
         name,
-        type: type || "Housing Society",
-        maxMembers: maxMembers ? parseInt(maxMembers) : 100,
+        type: type || COMMUNITY_DEFAULT_TYPE,
+        maxMembers: maxMembers ? parseInt(maxMembers) : COMMUNITY_DEFAULT_MAX_MEMBERS,
         address: address || "",
-        joinType: joinType || "request",
+        joinType: joinType || COMMUNITY_DEFAULT_JOIN_TYPE,
         adminId
       });
 
@@ -513,10 +552,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/community/:id/leave", async (req: Request, res: Response) => {
+  app.delete("/api/community/:id/leave", validateBody(leaveCommunitySchema), async (req: Request, res: Response) => {
     try {
       const { userId } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId is required" });
       
       const result = await storage.leaveCommunity(userId, req.params.id as string);
       if (!result.success) {
@@ -528,11 +566,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/community/:id/join", async (req: Request, res: Response) => {
+  app.post("/api/community/:id/join", validateBody(joinCommunitySchema), async (req: Request, res: Response) => {
     try {
       const { userId } = req.body;
       const communityId = req.params.id;
-      if (!userId) return res.status(400).json({ error: "userId is required" });
 
       const community = await storage.getCommunity(communityId as string);
       if (!community) return res.status(404).json({ error: "Community not found" });
@@ -568,12 +605,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.patch("/api/community/requests/:reqId", async (req: Request, res: Response) => {
+  app.patch("/api/community/requests/:reqId", validateBody(updateJoinRequestSchema), async (req: Request, res: Response) => {
     try {
-      const { status } = req.body; // 'approved' or 'rejected'
-      if (!['approved', 'rejected'].includes(status)) {
-        return res.status(400).json({ error: "Invalid status" });
-      }
+      const { status } = req.body;
 
       const request = await storage.updateJoinRequestStatus(req.params.reqId as string, status);
       if (!request) return res.status(404).json({ error: "Request not found" });
@@ -608,9 +642,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/notifications", async (_req, res) => {
     try {
       const notifications = await storage.getNotifications();
-      res.json(notifications);
+      return res.json(notifications);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: err.message });
     }
   });
 
@@ -635,7 +669,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── Matches ──────────────────────────────────────────
 
-  app.get("/api/donations/:donationId/matches", async (req: Request, res: Response) => {
+  app.get("/api/donations/:donationId/stored-matches", async (req: Request, res: Response) => {
     try {
       const matches = await storage.getMatchesForDonation(req.params.donationId as string);
       res.json(matches);
@@ -644,12 +678,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/matches/:donationId/accept", async (req: Request, res: Response) => {
+  app.post("/api/matches/:donationId/accept", validateBody(acceptMatchSchema), async (req: Request, res: Response) => {
     try {
       const donationId = req.params.donationId as string;
       const { receiverId, peerRequestId } = req.body;
-      
-      if (!receiverId) return res.status(400).json({ error: "receiverId is required" });
 
       const result = await storage.acceptDonation(donationId, receiverId, peerRequestId);
       if (!result.success) {
@@ -662,12 +694,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/matches/:matchId/verify", async (req: Request, res: Response) => {
+  app.post("/api/matches/:matchId/verify", validateBody(verifyMatchSchema), async (req: Request, res: Response) => {
     try {
       const matchId = req.params.matchId as string;
       const { otp } = req.body;
-      
-      if (!otp) return res.status(400).json({ error: "otp is required" });
 
       const result = await storage.verifyMatch(matchId, otp);
       if (!result.success) {
@@ -681,10 +711,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ── AI Scanner ───────────────────────────────────────
-  app.post("/api/scan", async (req, res) => {
+  app.post("/api/scan", validateBody(scanSchema), async (req, res) => {
     try {
       let { imageBase64, mediaType = "image/jpeg" } = req.body;
-      if (!imageBase64) return res.status(400).json({ error: "No image provided" });
 
       // Strip data URI prefix if present
       imageBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
@@ -720,10 +749,9 @@ If you cannot identify a food item, respond with: {"error": "No food item detect
     }
   });
 
-  app.post("/api/scan-receipt", async (req, res) => {
+  app.post("/api/scan-receipt", validateBody(receiptScanSchema), async (req, res) => {
     try {
       let { imageBase64, mediaType = "image/jpeg" } = req.body;
-      if (!imageBase64) return res.status(400).json({ error: "No image provided" });
 
       // Strip data URI prefix if present
       imageBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
@@ -766,14 +794,10 @@ If no items are found, respond with: {"items": []}`,
     }
   });
 
-  app.post("/api/recipes/suggest", async (req, res) => {
+  app.post("/api/recipes/suggest", validateBody(recipeSuggestionSchema), async (req, res) => {
     try {
       const { urgentIngredients = [], normalIngredients = [] } = req.body;
       const allIngredients = [...urgentIngredients, ...normalIngredients];
-      
-      if (allIngredients.length === 0) {
-        return res.status(400).json({ error: "No ingredients provided" });
-      }
 
       const prompt = `Suggest 3 creative recipes based on these ingredients:
       Urgent (Expiring soon): ${urgentIngredients.join(", ")}
