@@ -6,7 +6,6 @@ import {
   StyleSheet,
   Pressable,
   TextInput,
-  useColorScheme,
   Platform,
   Animated,
   Alert,
@@ -15,8 +14,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useApp, FoodItem, ExpiryStatus, Category } from '@/context/AppContext';
 import { Colors } from '@/constants/colors';
+import { useApp, useIsDark,FoodItem, ExpiryStatus, Category } from '@/context/AppContext';
 
 const CATEGORIES: Category[] = ['Fruits', 'Vegetables', 'Dairy', 'Grains', 'Protein', 'Beverages', 'Other'];
 
@@ -46,9 +45,8 @@ const CATEGORY_ICONS: Record<Category, string> = {
   Other: 'cube-outline',
 };
 
-function FoodItemCard({ item, onDelete }: { item: FoodItem; onDelete: () => void }) {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+function FoodItemCard({ item, onDelete }: { item: FoodItem; onDelete: (action: 'consume' | 'waste') => void }) {
+  const isDark = useIsDark();
   const { getExpiryStatus, getDaysRemaining } = useApp();
   const status = getExpiryStatus(item.expiryDate);
   const days = getDaysRemaining(item.expiryDate);
@@ -56,14 +54,31 @@ function FoodItemCard({ item, onDelete }: { item: FoodItem; onDelete: () => void
 
   const handleDelete = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    Alert.alert('Remove Item', `Remove ${item.name} from pantry?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove', style: 'destructive', onPress: () => {
-          Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(onDelete);
-        }
-      },
-    ]);
+    Alert.alert(
+      'Remove Item',
+      `How did you use ${item.name}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Consumed (Saved)',
+          onPress: () => {
+            Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => {
+              onDelete('consume');
+            });
+          }
+        },
+        {
+          text: 'Wasted',
+          style: 'destructive',
+          onPress: () => {
+            Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => {
+              onDelete('waste');
+            });
+          }
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
   const cardBg = isDark ? Colors.dark.card : EXPIRY_BG[status];
@@ -101,11 +116,10 @@ function FoodItemCard({ item, onDelete }: { item: FoodItem; onDelete: () => void
 
 export default function PantryScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const { pantryItems, removeFoodItem } = useApp();
+  const isDark = useIsDark();
+  const { pantryItems, removeFoodItem, removeAllExpiredItems, getDaysRemaining } = useApp();
   const [search, setSearch] = useState('');
-  const [activeCategory, setActiveCategory] = useState<Category | 'All'>('All');
+  const [activeCategory, setActiveCategory] = useState<Category | 'All' | 'Expired'>('All');
 
   const bg = isDark ? Colors.dark.background : Colors.background;
   const cardBg = isDark ? Colors.dark.card : Colors.card;
@@ -116,7 +130,14 @@ export default function PantryScreen() {
 
   const filtered = pantryItems.filter(item => {
     const matchSearch = item.name.toLowerCase().includes(search.toLowerCase());
-    const matchCategory = activeCategory === 'All' || item.category === activeCategory;
+    let matchCategory = false;
+    if (activeCategory === 'All') {
+      matchCategory = true;
+    } else if (activeCategory === 'Expired') {
+      matchCategory = getDaysRemaining(item.expiryDate) < 0;
+    } else {
+      matchCategory = item.category === activeCategory;
+    }
     return matchSearch && matchCategory;
   });
 
@@ -162,21 +183,25 @@ export default function PantryScreen() {
         style={[styles.categoryScroll, { backgroundColor: isDark ? Colors.dark.surface : Colors.surface }]}
         contentContainerStyle={styles.categoryContent}
       >
-        {(['All', ...CATEGORIES] as const).map(cat => (
+        {(['All', 'Expired', ...CATEGORIES] as const).map(cat => (
           <Pressable
             key={cat}
             onPress={() => { Haptics.selectionAsync(); setActiveCategory(cat as any); }}
             style={[
               styles.categoryChip,
               {
-                backgroundColor: activeCategory === cat ? Colors.primary : (isDark ? Colors.dark.card : '#fff'),
-                borderColor: activeCategory === cat ? Colors.primary : border,
+                backgroundColor: activeCategory === cat 
+                  ? (cat === 'Expired' ? Colors.expiry.danger : Colors.primary) 
+                  : (isDark ? Colors.dark.card : '#fff'),
+                borderColor: activeCategory === cat 
+                  ? (cat === 'Expired' ? Colors.expiry.danger : Colors.primary) 
+                  : border,
               }
             ]}
           >
             {cat !== 'All' && (
               <Ionicons
-                name={CATEGORY_ICONS[cat as Category] as any}
+                name={cat === 'Expired' ? 'warning-outline' : CATEGORY_ICONS[cat as Category] as any}
                 size={14}
                 color={activeCategory === cat ? '#fff' : Colors.textSecondary}
               />
@@ -195,6 +220,25 @@ export default function PantryScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={[styles.listContent, { paddingBottom: Platform.OS === 'web' ? 120 : 100 }]}
       >
+        {activeCategory === 'Expired' && filtered.length > 0 && (
+          <Pressable 
+            onPress={() => {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              Alert.alert(
+                'Delete All Expired', 
+                'Are you sure you want to remove all expired items?', 
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Delete All', style: 'destructive', onPress: removeAllExpiredItems }
+                ]
+              );
+            }}
+            style={styles.deleteAllBtn}
+          >
+            <Ionicons name="trash-outline" size={18} color="#fff" />
+            <Text style={styles.deleteAllText}>Delete All Expired</Text>
+          </Pressable>
+        )}
         {filtered.length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="basket-outline" size={56} color={Colors.textLight} />
@@ -205,7 +249,7 @@ export default function PantryScreen() {
           </View>
         ) : (
           filtered.map(item => (
-            <FoodItemCard key={item.id} item={item} onDelete={() => removeFoodItem(item.id)} />
+            <FoodItemCard key={item.id} item={item} onDelete={(action) => removeFoodItem(item.id, action)} />
           ))
         )}
       </ScrollView>
@@ -249,5 +293,7 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingTop: 80, gap: 12 },
   emptyTitle: { fontFamily: 'Poppins_600SemiBold', fontSize: 18 },
   emptyText: { fontFamily: 'Poppins_400Regular', fontSize: 14, textAlign: 'center' },
+  deleteAllBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.expiry.danger, padding: 14, borderRadius: 14, marginBottom: 4, gap: 8 },
+  deleteAllText: { color: '#fff', fontFamily: 'Poppins_600SemiBold', fontSize: 14 },
   fab: { position: 'absolute', right: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center', shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 8 },
 });

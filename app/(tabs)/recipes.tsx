@@ -6,15 +6,16 @@ import {
   StyleSheet,
   Pressable,
   TextInput,
-  useColorScheme,
   Platform,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useApp, Recipe } from '@/context/AppContext';
+
 import { Colors } from '@/constants/colors';
+import { useApp, useIsDark,Recipe } from '@/context/AppContext';
 
 type FilterType = 'All' | 'Quick Meals' | 'Zero Waste' | 'Healthy';
 const FILTERS: FilterType[] = ['All', 'Quick Meals', 'Zero Waste', 'Healthy'];
@@ -142,9 +143,8 @@ function RecipeCard({ recipe, isDark, onPress }: { recipe: Recipe; isDark: boole
 
 export default function RecipesScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
-  const { recipes } = useApp();
+  const isDark = useIsDark();
+  const { recipes, isGeneratingRecipes, generateRecipes } = useApp();
   const [filter, setFilter] = useState<FilterType>('All');
   const [search, setSearch] = useState('');
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
@@ -166,8 +166,29 @@ export default function RecipesScreen() {
     <View style={[styles.container, { backgroundColor: bg }]}>
       {/* Header */}
       <View style={[styles.header, { paddingTop: topPadding + 8, backgroundColor: isDark ? Colors.dark.card : '#1B5E20' }]}>
-        <Text style={styles.headerTitle}>Recipe Suggestions</Text>
-        <Text style={styles.headerSubtitle}>Based on your pantry items</Text>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <View>
+            <Text style={styles.headerTitle}>Recipe Suggestions</Text>
+            <Text style={styles.headerSubtitle}>Based on your pantry items</Text>
+          </View>
+          <Pressable 
+            onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); generateRecipes(); }}
+            disabled={isGeneratingRecipes}
+            style={({ pressed }) => [
+              styles.generateBtn, 
+              { opacity: pressed || isGeneratingRecipes ? 0.7 : 1 }
+            ]}
+          >
+            {isGeneratingRecipes ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="sparkles" size={16} color="#fff" />
+                <Text style={styles.generateBtnText}>AI Refresh</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
         <View style={[styles.searchBar, { backgroundColor: isDark ? Colors.dark.background : '#fff' }]}>
           <Ionicons name="search-outline" size={18} color={Colors.textLight} />
           <TextInput
@@ -207,9 +228,24 @@ export default function RecipesScreen() {
       >
         {filtered.length === 0 ? (
           <View style={styles.emptyState}>
-            <Ionicons name="restaurant-outline" size={56} color={Colors.textLight} />
-            <Text style={[styles.emptyTitle, { color: textPrimary }]}>No recipes found</Text>
-            <Text style={[styles.emptyText, { color: textSecondary }]}>Add more items to your pantry</Text>
+            <View style={styles.mysteryIcon}>
+              <Ionicons name="sparkles" size={48} color={Colors.primary} />
+            </View>
+            <Text style={[styles.emptyTitle, { color: textPrimary }]}>Hungry for Suggestions?</Text>
+            <Text style={[styles.emptyText, { color: textSecondary }]}>
+              Press <Text style={{ fontFamily: 'Poppins_700Bold', color: Colors.primary }}>Load Recipies</Text> to cook your favourite dishes
+            </Text>
+            <Pressable 
+              onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); generateRecipes(); }}
+              disabled={isGeneratingRecipes}
+              style={[styles.bigRefreshBtn, { backgroundColor: Colors.primary }]}
+            >
+              {isGeneratingRecipes ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.bigRefreshBtnText}>Load Recipies</Text>
+              )}
+            </Pressable>
           </View>
         ) : (
           filtered.map(recipe => (
@@ -240,6 +276,21 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 20, paddingBottom: 16 },
   headerTitle: { color: '#fff', fontFamily: 'Poppins_700Bold', fontSize: 22 },
   headerSubtitle: { color: 'rgba(255,255,255,0.75)', fontFamily: 'Poppins_400Regular', fontSize: 13, marginBottom: 12 },
+  generateBtn: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    backgroundColor: Colors.primary, 
+    paddingHorizontal: 12, 
+    paddingVertical: 8, 
+    borderRadius: 12, 
+    gap: 6,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4
+  },
+  generateBtnText: { color: '#fff', fontFamily: 'Poppins_600SemiBold', fontSize: 13 },
   searchBar: { flexDirection: 'row', alignItems: 'center', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10, gap: 10 },
   searchInput: { flex: 1, fontSize: 14 },
   filterScroll: { maxHeight: 52 },
@@ -264,9 +315,12 @@ const styles = StyleSheet.create({
   ingText: { fontFamily: 'Poppins_500Medium', fontSize: 11 },
   inPantryLabel: { fontFamily: 'Poppins_600SemiBold', fontSize: 10, color: Colors.primary, marginLeft: 'auto' },
   missingLabel: { fontFamily: 'Poppins_400Regular', fontSize: 10, color: Colors.textLight, marginLeft: 'auto' },
-  emptyState: { alignItems: 'center', paddingTop: 80, gap: 12 },
-  emptyTitle: { fontFamily: 'Poppins_600SemiBold', fontSize: 18 },
-  emptyText: { fontFamily: 'Poppins_400Regular', fontSize: 14, textAlign: 'center' },
+  emptyState: { alignItems: 'center', paddingTop: 80, gap: 16, paddingHorizontal: 40 },
+  mysteryIcon: { width: 100, height: 100, borderRadius: 50, backgroundColor: 'rgba(46, 125, 50, 0.1)', alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  emptyTitle: { fontFamily: 'Poppins_600SemiBold', fontSize: 20, textAlign: 'center' },
+  emptyText: { fontFamily: 'Poppins_400Regular', fontSize: 14, textAlign: 'center', lineHeight: 22, color: 'rgba(255,255,255,0.6)' },
+  bigRefreshBtn: { marginTop: 12, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 16, shadowColor: Colors.primary, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  bigRefreshBtnText: { color: '#fff', fontFamily: 'Poppins_700Bold', fontSize: 16 },
   // Modal
   modalContainer: { flex: 1 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingBottom: 16 },

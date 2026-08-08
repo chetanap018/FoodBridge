@@ -5,15 +5,14 @@ import {
   ScrollView,
   StyleSheet,
   Pressable,
-  useColorScheme,
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useApp, Notification } from '@/context/AppContext';
 import { Colors } from '@/constants/colors';
+import { useApp, useIsDark ,Notification} from '@/context/AppContext';
 
 const NOTIF_CONFIG: Record<string, { icon: string; color: string; bgColor: string }> = {
   expiry: { icon: 'warning-outline', color: Colors.danger, bgColor: '#FFEBEE' },
@@ -69,8 +68,7 @@ function formatTimeAgo(ts: number): string {
 
 export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const isDark = useIsDark();
   const { notifications, markNotificationRead, clearAllNotifications } = useApp();
   const unread = notifications.filter(n => !n.read);
 

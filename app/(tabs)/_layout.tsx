@@ -2,15 +2,16 @@ import { isLiquidGlassAvailable } from "expo-glass-effect";
 import { Tabs } from "expo-router";
 import { NativeTabs, Icon, Label, Badge } from "expo-router/unstable-native-tabs";
 import { BlurView } from "expo-blur";
-import { Platform, StyleSheet, useColorScheme, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
-import { useApp } from "@/context/AppContext";
 import { Colors } from "@/constants/colors";
+import { useApp, useIsDark } from '@/context/AppContext';
 
 function NativeTabLayout() {
-  const { notifications } = useApp();
+  const { notifications, profile } = useApp();
   const unreadCount = notifications.filter(n => !n.read).length;
+  const isHousehold = profile.userCategory === 'Household';
 
   return (
     <NativeTabs>
@@ -18,17 +19,22 @@ function NativeTabLayout() {
         <Icon sf={{ default: "house", selected: "house.fill" }} />
         <Label>Home</Label>
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="pantry">
-        <Icon sf={{ default: "basket", selected: "basket.fill" }} />
-        <Label>Pantry</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="recipes">
-        <Icon sf={{ default: "fork.knife", selected: "fork.knife" }} />
-        <Label>Recipes</Label>
-      </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="donate">
-        <Icon sf={{ default: "heart", selected: "heart.fill" }} />
-        <Label>Donate</Label>
+      {isHousehold && (
+        <NativeTabs.Trigger name="pantry">
+          <Icon sf={{ default: "basket", selected: "basket.fill" }} />
+          <Label>Pantry</Label>
+        </NativeTabs.Trigger>
+      )}
+      {isHousehold && (
+        <NativeTabs.Trigger name="recipes">
+          <Icon sf={{ default: "fork.knife", selected: "fork.knife" }} />
+          <Label>Recipes</Label>
+        </NativeTabs.Trigger>
+      )}
+
+      <NativeTabs.Trigger name="community">
+        <Icon sf={{ default: "person.3", selected: "person.3.fill" }} />
+        <Label>Community</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="profile">
         <Icon sf={{ default: "person", selected: "person.fill" }} />
@@ -40,12 +46,12 @@ function NativeTabLayout() {
 }
 
 function ClassicTabLayout() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
+  const isDark = useIsDark();
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
-  const { notifications } = useApp();
+  const { notifications, profile } = useApp();
   const unreadCount = notifications.filter(n => !n.read).length;
+  const isHousehold = profile.userCategory === 'Household';
 
   const activeColor = isDark ? Colors.primaryLight : Colors.primary;
   const inactiveColor = isDark ? "#5A7A5A" : Colors.textLight;
@@ -85,6 +91,7 @@ function ClassicTabLayout() {
         name="index"
         options={{
           title: "Home",
+          href: isHousehold ? undefined : null, // Hide if not household
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "home" : "home-outline"} size={24} color={color} />
           ),
@@ -94,6 +101,7 @@ function ClassicTabLayout() {
         name="pantry"
         options={{
           title: "Pantry",
+          href: isHousehold ? undefined : null,
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "basket" : "basket-outline"} size={24} color={color} />
           ),
@@ -103,6 +111,7 @@ function ClassicTabLayout() {
         name="recipes"
         options={{
           title: "Recipes",
+          href: isHousehold ? undefined : null,
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "restaurant" : "restaurant-outline"} size={24} color={color} />
           ),
@@ -111,9 +120,15 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="donate"
         options={{
-          title: "Donate",
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="community"
+        options={{
+          title: "Community",
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? "heart" : "heart-outline"} size={24} color={color} />
+            <Ionicons name={focused ? "people" : "people-outline"} size={24} color={color} />
           ),
         }}
       />

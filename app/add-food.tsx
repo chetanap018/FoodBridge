@@ -6,7 +6,6 @@ import {
   StyleSheet,
   Pressable,
   TextInput,
-  useColorScheme,
   Platform,
   Alert,
 } from 'react-native';
@@ -14,8 +13,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useApp, Category, StorageLocation } from '@/context/AppContext';
 import { Colors } from '@/constants/colors';
+import { useApp, useIsDark , Category, StorageLocation} from '@/context/AppContext';
 
 const CATEGORIES: Category[] = ['Fruits', 'Vegetables', 'Dairy', 'Grains', 'Protein', 'Beverages', 'Other'];
 const STORAGE: StorageLocation[] = ['Fridge', 'Freezer', 'Pantry', 'Counter'];
@@ -79,8 +78,7 @@ function DateField({ label, value, onChange, isDark }: { label: string; value: s
 
 export default function AddFoodScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === 'dark';
+  const isDark = useIsDark();
   const { addFoodItem } = useApp();
 
   const today = new Date().toISOString().split('T')[0];
